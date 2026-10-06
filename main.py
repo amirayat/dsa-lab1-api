@@ -1,42 +1,37 @@
 """
 DSA Lab 1 API — FastAPI entry point
+Student: Amir Ayat, Internal Code: F3319, Variant: 7 (Azure Face)
 """
-import os
-import ssl
-from contextlib import asynccontextmanager
+from typing import List
+from uuid import UUID, uuid4
 
-import asyncpg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
-db_pool: asyncpg.Pool = None
-
-
-def build_ssl_context():
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Lazily create the pool on first use — survives gunicorn forking."""
-    global db_pool
-    if db_pool is None:
-        db_pool = await asyncpg.create_pool(
-            host=os.environ["POSTGRES_HOST"],
-            port=int(os.environ.get("POSTGRES_PORT", "5432")),
-            database=os.environ["POSTGRES_DB"],
-            user=os.environ["POSTGRES_USER"],
-            password=os.environ["POSTGRES_PASSWORD"],
-            ssl=build_ssl_context(),
-            min_size=1,
-            max_size=5,
-        )
-    return db_pool
+from app.db import get_pool, close_pool
+from app.repository import (
+    create_request,
+    create_image,
+    get_request,
+    get_image,
+    update_image_state,
+)
+from app.schemas import SubmitResponse, RequestStatus, ImageResult
 
 
-app = FastAPI(title="DSA Lab 1 API", version="0.1.0")
+app = FastAPI(
+    title="DSA Lab 1 API",
+    description="Distributed system with Azure Face (mask & glasses detection)",
+    version="0.2.0",
+)
 
+
+@app.on_event("shutdown")
+async def shutdown():
+    await close_pool()
+
+
+# ---------- Health ----------
 
 @app.get("/")
 def root():
@@ -57,3 +52,64 @@ async def db_check():
         return {"status": "connected", "postgres_version": version}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------- Submit ----------
+
+@app.post("/submit", response_model=SubmitResponse)
+async def submit(
+    user_id: str = Form(...),
+    files: List[UploadFile] = File(...),
+):
+    """
+    Submit a list of images.
+    For now, files are acknowledged but not stored (Blob upload comes next).
+    Each image is inserted with state 'q1 Queued'.
+    """
+    request_id = await create_request(user_id=user_id, total=len(files))
+
+    image_ids = []
+    for f in files:
+        # In this stage, we use the filename as blob_url placeholder.
+        # Next step will upload to Blob Storage and use the real URL.
+        blob_url = f"pending://{f.filename}"
+        image_id = await create_image(
+            request_id=request_id,
+            filename=f.filename,
+            blob_url=blob_url,
+            state="q1 Queued",
+        )
+        image_ids.append(image_id)
+
+    return SubmitResponse(
+        request_id=request_id,
+        image_ids=image_ids,
+        status="pending",
+    )
+
+
+# ---------- Status ----------
+
+@app.get("/status/{request_id}", response_model=RequestStatus)
+async def status(request_id: UUID):
+    req = await get_request(request_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return req
+
+
+# ---------- Result ----------
+
+@app.get("/result/{image_id}", response_model=ImageResult)
+async def result(image_id: UUID):
+    img = await get_image(image_id)
+    if img is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return ImageResult(
+        id=img["id"],
+        filename=img["filename"],
+        state=img["state"],
+        result=img["result_json"],
+        error=img["error"],
+    )
