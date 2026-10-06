@@ -54,74 +54,57 @@ async def db_check():
 
 
 # ---------- Submit ----------
+ALLOWED_CONTENT_TYPES = {
+    "image/jpeg", "image/jpg", "image/png", "image/gif", "image/bmp", "image/webp",
+}
 
 @app.post("/submit", response_model=SubmitResponse)
 async def submit(
     user_id: str = Form(...),
     files: List[UploadFile] = File(...),
 ):
-    """
-    Submit a list of images.
-
-    For each image:
-      1. Generate a UUID (used as image_id and blob_name)
-      2. Upload to Blob Storage as {image_id}.jpg
-      3. Insert a row in `images` with state = 'q1 Queued'
-      4. Event Grid will auto-publish a message to Service Bus
-
-    Returns:
-      request_id + list of image_ids
-    """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # 1. Create the request row
     request_id = await create_request(user_id=user_id, total=len(files))
-
     image_ids: list[UUID] = []
 
     for f in files:
-        # 2. Generate a unique UUID for this image
+        # 1. Validate content-type
+        ct = (f.content_type or "").lower()
+        if ct not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported image format for {f.filename}: {ct}. "
+                       f"Allowed: {sorted(ALLOWED_CONTENT_TYPES)}",
+            )
+
         image_id = uuid4()
-        blob_name = f"{image_id}.jpg"
+        # 2. Preserve the real extension
+        ext = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+               "image/gif": "gif", "image/bmp": "bmp", "image/webp": "webp"}[ct]
+        blob_name = f"{image_id}.{ext}"
 
-        # 3. Read the uploaded bytes
-        try:
-            image_bytes = await f.read()
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to read file {f.filename}: {e}")
-
+        image_bytes = await f.read()
         if not image_bytes:
             raise HTTPException(status_code=400, detail=f"Empty file: {f.filename}")
 
-        # 4. Upload to Blob Storage
-        try:
-            blob_url = await upload_to_blob(
-                blob_name=blob_name,
-                data=image_bytes,
-                content_type=f.content_type or "image/jpeg",
-            )
-        except Exception as e:
-            # Rollback partial work is out of scope for the lab.
-            # In production, use a saga pattern or compensating transactions.
-            raise HTTPException(status_code=500, detail=f"Blob upload failed: {e}")
+        blob_url = await upload_to_blob(
+            blob_name=blob_name,
+            data=image_bytes,
+            content_type=ct,                    # ← use real content-type
+        )
 
-        # 5. Insert DB row
         await create_image(
             image_id=image_id,
             request_id=request_id,
-            filename=f.filename or "unknown.jpg",   # display name
-            blob_url=blob_url,                       # real Azure URL
+            filename=f.filename or "unknown",
+            blob_url=blob_url,
             state="q1 Queued",
         )
-
         image_ids.append(image_id)
 
-    return SubmitResponse(
-        request_id=request_id,
-        image_ids=image_ids,
-        status="pending",
-    )
+    return SubmitResponse(request_id=request_id, image_ids=image_ids, status="pending")
 
 
 # ---------- Status ----------
