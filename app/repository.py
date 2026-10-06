@@ -6,6 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
+import json
 
 from app.db import get_pool
 
@@ -116,13 +117,23 @@ async def create_image(
 
 
 async def get_image(image_id: UUID) -> Optional[dict]:
-    """Fetch a single image row."""
+    """Fetch a single image row; parse result_json if present."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM images WHERE id = $1", image_id,
         )
-    return dict(row) if row else None
+    if not row:
+        return None
+
+    img = dict(row)
+    # asyncpg returns JSONB as a string by default — decode it here
+    if isinstance(img.get("result_json"), str):
+        try:
+            img["result_json"] = json.loads(img["result_json"])
+        except (json.JSONDecodeError, TypeError):
+            img["result_json"] = None
+    return img
 
 
 async def update_image_state(

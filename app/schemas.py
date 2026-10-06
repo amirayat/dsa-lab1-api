@@ -3,7 +3,7 @@ app/schemas.py
 Pydantic models for API requests and responses.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -40,5 +40,5 @@ class ImageResult(BaseModel):
     id: UUID
     filename: str
     state: str
-    result: Optional[dict] = None
+    result: Optional[List[Dict[str, Any]]] = None
     error: Optional[str] = None
