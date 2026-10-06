@@ -6,15 +6,14 @@ from typing import List
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
 
 from app.db import get_pool, close_pool
+from app.blob_storage import upload_to_blob
 from app.repository import (
     create_request,
     create_image,
     get_request,
     get_image,
-    update_image_state,
 )
 from app.schemas import SubmitResponse, RequestStatus, ImageResult
 
@@ -22,7 +21,7 @@ from app.schemas import SubmitResponse, RequestStatus, ImageResult
 app = FastAPI(
     title="DSA Lab 1 API",
     description="Distributed system with Azure Face (mask & glasses detection)",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -63,22 +62,59 @@ async def submit(
 ):
     """
     Submit a list of images.
-    For now, files are acknowledged but not stored (Blob upload comes next).
-    Each image is inserted with state 'q1 Queued'.
+
+    For each image:
+      1. Generate a UUID (used as image_id and blob_name)
+      2. Upload to Blob Storage as {image_id}.jpg
+      3. Insert a row in `images` with state = 'q1 Queued'
+      4. Event Grid will auto-publish a message to Service Bus
+
+    Returns:
+      request_id + list of image_ids
     """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # 1. Create the request row
     request_id = await create_request(user_id=user_id, total=len(files))
 
-    image_ids = []
+    image_ids: list[UUID] = []
+
     for f in files:
-        # In this stage, we use the filename as blob_url placeholder.
-        # Next step will upload to Blob Storage and use the real URL.
-        blob_url = f"pending://{f.filename}"
-        image_id = await create_image(
+        # 2. Generate a unique UUID for this image
+        image_id = uuid4()
+        blob_name = f"{image_id}.jpg"
+
+        # 3. Read the uploaded bytes
+        try:
+            image_bytes = await f.read()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to read file {f.filename}: {e}")
+
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail=f"Empty file: {f.filename}")
+
+        # 4. Upload to Blob Storage
+        try:
+            blob_url = await upload_to_blob(
+                blob_name=blob_name,
+                data=image_bytes,
+                content_type=f.content_type or "image/jpeg",
+            )
+        except Exception as e:
+            # Rollback partial work is out of scope for the lab.
+            # In production, use a saga pattern or compensating transactions.
+            raise HTTPException(status_code=500, detail=f"Blob upload failed: {e}")
+
+        # 5. Insert DB row
+        await create_image(
+            image_id=image_id,
             request_id=request_id,
-            filename=f.filename,
-            blob_url=blob_url,
+            filename=f.filename or "unknown.jpg",   # display name
+            blob_url=blob_url,                       # real Azure URL
             state="q1 Queued",
         )
+
         image_ids.append(image_id)
 
     return SubmitResponse(

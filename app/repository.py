@@ -96,23 +96,23 @@ async def increment_completed(request_id: UUID, failed: bool = False) -> None:
 # ---------- images ----------
 
 async def create_image(
+    image_id: UUID,                # ← now required
     request_id: UUID,
     filename: str,
     blob_url: str,
     state: str = "q1 Queued",
 ) -> UUID:
-    """Insert an image row and return its ID."""
+    """Insert an image row with an explicit image_id."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
+        await conn.execute(
             """
-            INSERT INTO images (request_id, filename, blob_url, state)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id
+            INSERT INTO images (id, request_id, filename, blob_url, state)
+            VALUES ($1, $2, $3, $4, $5)
             """,
-            request_id, filename, blob_url, state,
+            image_id, request_id, filename, blob_url, state,
         )
-    return row["id"]
+    return image_id
 
 
 async def get_image(image_id: UUID) -> Optional[dict]:

@@ -4,3 +4,5 @@ gunicorn==23.0.0
 asyncpg==0.30.0
 python-multipart==0.0.12
 pydantic==2.9.2
+azure-storage-blob==12.23.1
+azure-core==1.31.0
