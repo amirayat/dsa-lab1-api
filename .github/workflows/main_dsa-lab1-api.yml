@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'dsa-lab1-api'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_61650D57982A49679E65938191FC5821 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
